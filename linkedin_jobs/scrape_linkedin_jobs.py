@@ -82,8 +82,17 @@ def parse_detail(html):
     return detail
 
 
-def scrape(keywords, location, max_jobs, with_details, posted_within):
-    session = requests.Session()
+def add_details(session, job):
+    html = get(session, DETAIL_URL.format(job_id=job["job_id"]))
+    if html:
+        job.update(parse_detail(html))
+    desc = job.get("description", "")
+    job["mentions_java"] = bool(re.search(r"\bjava\b", desc, re.I))
+    job["mentions_selenium"] = bool(re.search(r"selenium", desc, re.I))
+    return job
+
+
+def search(session, keywords, location, max_jobs, posted_within=None):
     jobs, seen = [], set()
     start = 0
     while len(jobs) < max_jobs:
@@ -101,16 +110,15 @@ def scrape(keywords, location, max_jobs, with_details, posted_within):
         print(f"page start={start}: {len(cards)} cards, {len(jobs)} unique total")
         start += PAGE_SIZE
         time.sleep(random.uniform(1.0, 2.5))
-    jobs = jobs[:max_jobs]
+    return jobs[:max_jobs]
 
+
+def scrape(keywords, location, max_jobs, with_details, posted_within):
+    session = requests.Session()
+    jobs = search(session, keywords, location, max_jobs, posted_within)
     if with_details:
         for i, job in enumerate(jobs, 1):
-            html = get(session, DETAIL_URL.format(job_id=job["job_id"]))
-            if html:
-                job.update(parse_detail(html))
-            desc = job.get("description", "")
-            job["mentions_java"] = bool(re.search(r"\bjava\b", desc, re.I))
-            job["mentions_selenium"] = bool(re.search(r"selenium", desc, re.I))
+            add_details(session, job)
             print(f"detail {i}/{len(jobs)}: {job['title']} @ {job['company']}")
             time.sleep(random.uniform(1.0, 2.5))
     return jobs
