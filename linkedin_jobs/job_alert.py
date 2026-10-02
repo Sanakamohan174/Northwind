@@ -1,21 +1,26 @@
-"""Check LinkedIn for new jobs and send them to WhatsApp.
+"""Check LinkedIn for new jobs and send them to WhatsApp and/or email.
 
 Runs hourly from .github/workflows/linkedin-job-alert.yml. Jobs already checked are
 remembered in state/seen_jobs.json so each job is sent only once.
 
-WhatsApp is sent via one of (set as environment variables / GitHub secrets):
-  CallMeBot (free):  CALLMEBOT_PHONE, CALLMEBOT_APIKEY
-  Twilio:            TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, WHATSAPP_TO
+Alerts go to every channel configured (set as environment variables / GitHub secrets):
+  Email (Gmail):     EMAIL_USER, EMAIL_APP_PASSWORD, EMAIL_TO (optional, defaults to EMAIL_USER)
+  WhatsApp, either:
+    CallMeBot (free): CALLMEBOT_PHONE, CALLMEBOT_APIKEY
+    Twilio:           TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, WHATSAPP_TO
 
 Use --dry-run to print matches without sending or saving state.
 """
 
 import argparse
+import html
 import json
 import os
 import random
+import smtplib
 import sys
 import time
+from email.message import EmailMessage
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -63,6 +68,23 @@ def build_messages(jobs, header):
     return messages
 
 
+def whatsapp_configured():
+    env = os.environ
+    return bool(
+        (env.get("CALLMEBOT_PHONE") and env.get("CALLMEBOT_APIKEY"))
+        or (env.get("TWILIO_ACCOUNT_SID") and env.get("TWILIO_AUTH_TOKEN"))
+    )
+
+
+def email_configured():
+    return bool(os.environ.get("EMAIL_USER") and os.environ.get("EMAIL_APP_PASSWORD"))
+
+
+def send_whatsapp_alert(jobs, header):
+    for msg in build_messages(jobs, header):
+        send_whatsapp(msg)
+
+
 def send_whatsapp(text):
     env = os.environ
     if env.get("CALLMEBOT_PHONE") and env.get("CALLMEBOT_APIKEY"):
@@ -88,8 +110,37 @@ def send_whatsapp(text):
         )
         if resp.status_code >= 300:
             raise RuntimeError(f"Twilio failed ({resp.status_code}): {resp.text[:300]}")
-    else:
-        raise RuntimeError("No WhatsApp sender configured (set CALLMEBOT_* or TWILIO_* secrets)")
+
+
+def send_email_alert(jobs, header):
+    env = os.environ
+    rows = "".join(
+        "<tr>"
+        f"<td><a href=\"{html.escape(j['url'])}\">{html.escape(j['title'])}</a></td>"
+        f"<td>{html.escape(j['company'])}</td>"
+        f"<td>{html.escape(j.get('seniority_level', ''))}</td>"
+        f"<td>{html.escape(j.get('posted_ago', ''))}</td>"
+        "</tr>"
+        for j in jobs
+    )
+    body = (
+        f"<h3>{html.escape(header)}</h3>"
+        "<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" style=\"border-collapse:collapse\">"
+        "<tr><th>Role</th><th>Company</th><th>Seniority</th><th>Posted</th></tr>"
+        f"{rows}</table>"
+    )
+    msg = EmailMessage()
+    msg["Subject"] = header
+    msg["From"] = env["EMAIL_USER"]
+    msg["To"] = env.get("EMAIL_TO") or env["EMAIL_USER"]
+    msg.set_content("\n\n".join(format_job(j).replace("*", "") for j in jobs))
+    msg.add_alternative(body, subtype="html")
+    try:
+        with smtplib.SMTP_SSL(env.get("SMTP_HOST", "smtp.gmail.com"), 465, timeout=60) as smtp:
+            smtp.login(env["EMAIL_USER"], env["EMAIL_APP_PASSWORD"])
+            smtp.send_message(msg)
+    except (smtplib.SMTPException, OSError) as exc:
+        raise RuntimeError(f"Email failed: {exc}") from exc
 
 
 def main():
@@ -129,15 +180,31 @@ def main():
 
     if matches:
         header = f"🔔 {len(matches)} new Java + Selenium job(s) in {args.location.split(',')[0]}"
-        try:
-            for msg in build_messages(matches, header):
-                send_whatsapp(msg)
-        except RuntimeError as exc:
+        channels = []
+        if email_configured():
+            channels.append(("email", send_email_alert))
+        if whatsapp_configured():
+            channels.append(("WhatsApp", send_whatsapp_alert))
+        if not channels:
+            save_state(seen)  # matches stay unseen so they're sent once a channel is set up
+            print("No alert channel configured (set EMAIL_* or CALLMEBOT_*/TWILIO_* secrets)", file=sys.stderr)
+            sys.exit(1)
+        sent = 0
+        for name, send in channels:
+            try:
+                send(matches, header)
+                sent += 1
+                print(f"Sent {len(matches)} job(s) by {name}")
+            except RuntimeError as exc:
+                print(exc, file=sys.stderr)
+        if not sent:
             save_state(seen)  # matches stay unseen so they're retried next run
-            print(exc, file=sys.stderr)
             sys.exit(1)
         for job in matches:
             seen[job["job_id"]] = today
+        if sent < len(channels):
+            save_state(seen)
+            sys.exit(1)  # flag the failed channel in the Actions run
 
     save_state(seen)
 

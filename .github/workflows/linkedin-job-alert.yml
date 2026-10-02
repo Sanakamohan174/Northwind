@@ -25,9 +25,12 @@ jobs:
 
       - run: pip install -r linkedin_jobs/requirements.txt
 
-      - name: Check for new jobs and send to WhatsApp
+      - name: Check for new jobs and send alerts
         working-directory: linkedin_jobs
         env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
           CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
