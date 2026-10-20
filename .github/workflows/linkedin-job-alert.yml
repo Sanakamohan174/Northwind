@@ -1,8 +1,9 @@
 name: LinkedIn job alert
 
 on:
-  schedule:
-    - cron: "7 * * * *" # every hour
+  # Hourly schedule turned off at the user's request. To turn alerts back on, restore:
+  # schedule:
+  #   - cron: "7 * * * *" # every hour
   workflow_dispatch:
 
 permissions:
